@@ -7,6 +7,9 @@ def obtener_titulo_y_parrafos(url: str) -> tuple[str, list[str]]:
     # Lanzar excepción si la respuesta tiene código de error (4xx, 5xx)
     respuesta.raise_for_status()
 
+    # Asegurar una decodificación correcta de caracteres (tildes, ñ, etc.).
+    respuesta.encoding = respuesta.apparent_encoding or respuesta.encoding or "utf-8"
+
     # Crear el objeto BeautifulSoup a partir del HTML recibido
     soup = BeautifulSoup(respuesta.text, "html.parser")
 

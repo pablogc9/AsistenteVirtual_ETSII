@@ -29,7 +29,7 @@ class DocumentProcessor:
             for w in (
                 menu_words
                 if menu_words is not None
-                else ["idioma", "sesión", "iduma", "cerrar"]
+                else ["sesión", "iduma", "cerrar"]
             )
         ]
 

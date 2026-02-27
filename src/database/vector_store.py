@@ -92,11 +92,27 @@ class VectorStoreManager:
             hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts
         ]
 
+        # Chroma exige que los IDs sean únicos dentro de una misma operación.
+        # Si hay chunks duplicados (mismo texto => mismo hash) en la misma subida,
+        # los colapsamos aquí para que la operación sea idempotente.
+        unique_ids: List[str] = []
+        unique_texts: List[str] = []
+        unique_metas: List[Mapping[str, Any]] = []
+        seen: set[str] = set()
+
+        for doc_id, text, meta in zip(ids, texts, metas):
+            if doc_id in seen:
+                continue
+            seen.add(doc_id)
+            unique_ids.append(doc_id)
+            unique_texts.append(text)
+            unique_metas.append(meta)
+
         # Con IDs deterministas, upsert hace la operación idempotente (evita duplicados).
         self._collection.upsert(
-            ids=ids,
-            documents=texts,
-            metadatas=list(metas),
+            ids=unique_ids,
+            documents=unique_texts,
+            metadatas=list(unique_metas),
         )
 
     def search(self, query: str, k: int = 3) -> List[dict[str, Any]]:
