@@ -10,7 +10,7 @@ from chromadb.utils import embedding_functions
 try:
     # Tipo de documento compatible con el procesador basado en LangChain
     from langchain_core.documents import Document as LCDocument
-except Exception:  # pragma: no cover - fallback cuando langchain_core no está disponible
+except ImportError:  # pragma: no cover - fallback cuando langchain_core no está disponible
     LCDocument = Any  # type: ignore
 
 
@@ -27,7 +27,7 @@ class VectorStoreManager:
         self,
         collection_name: str = "etsi_documents",
         persist_directory: str | None = None,
-        embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+        embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     ) -> None:
         # Carpeta raíz del proyecto (.. / .. desde src/database/)
         project_root = Path(__file__).resolve().parents[2]
@@ -126,6 +126,11 @@ class VectorStoreManager:
         """
         if not query:
             return []
+
+        count = self._collection.count()
+        if count == 0:
+            return []
+        k = min(k, count)
 
         result = self._collection.query(
             query_texts=[query],

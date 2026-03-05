@@ -46,19 +46,6 @@ class ChatEngine:
             temperature=temperature,
         )
 
-        self._prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", SYSTEM_PROMPT),
-                (
-                    "human",
-                    "Contexto relevante:\n\n{context}\n\n"
-                    "Pregunta del usuario:\n{question}",
-                ),
-            ]
-        )
-
-        # Cadena simple: prompt -> LLM -> texto
-        self._chain = self._prompt | self._llm | StrOutputParser()
 
     @staticmethod
     def _format_context(
@@ -97,7 +84,7 @@ class ChatEngine:
         question: str,
         fragments: Sequence[Mapping[str, Any]],
         historial: list[Mapping[str, Any]],
-    ) -> str:
+    ) -> tuple[str, int]:
         """
         Genera una respuesta final a partir de la pregunta del usuario y los
         fragmentos recuperados del vector store.
@@ -112,7 +99,8 @@ class ChatEngine:
             # Forzamos el comportamiento de 'si no sabes la respuesta, dilo'
             return (
                 "No dispongo de suficiente contexto para responder a esa pregunta. "
-                "Prueba a reformularla o consulta con la secretaría de la ETSI Informática."
+                "Prueba a reformularla o consulta con la secretaría de la ETSI Informática.",
+                0,
             )
 
         context = self._format_context(fragments)
@@ -127,9 +115,14 @@ class ChatEngine:
         messages.append(("human", f"Contexto relevante:\n\n{context}\n\nPregunta del usuario:\n{question}"))
 
         prompt = ChatPromptTemplate.from_messages(messages)
-        chain = prompt | self._llm | StrOutputParser()
+        
+        ai_message = (prompt | self._llm).invoke({})
 
-        return chain.invoke({})
+        answer      = ai_message.content
+        usage       = ai_message.response_metadata.get("token_usage", {})
+        tokens_used = usage.get("total_tokens", 0)
+
+        return answer, tokens_used
 
 
 __all__ = ["ChatEngine", "SYSTEM_PROMPT"]

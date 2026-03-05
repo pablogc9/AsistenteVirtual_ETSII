@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 
 def obtener_titulo_y_parrafos(url: str) -> tuple[str, list[str]]:
+    HEADERS ? {"User_agent": "AsistenteETSI/1.0"}
     # Hacer la petición HTTP a la URL
     respuesta = requests.get(url)
     # Lanzar excepción si la respuesta tiene código de error (4xx, 5xx)
@@ -18,16 +19,17 @@ def obtener_titulo_y_parrafos(url: str) -> tuple[str, list[str]]:
     if soup.title and soup.title.string:
         titulo = soup.title.string.strip()
 
-    # Extraer todos los textos dentro de etiquetas <p>
+    # Extraer textos de párrafos y listas
     parrafos = []
-    for p in soup.find_all("p"):
-        texto = p.get_text(strip=True)
-        if texto:  # Evitar añadir párrafos vacíos
+    for tag in soup.find_all(["p", "li"]):
+        texto = tag.get_text(strip=True)
+        if texto:
             parrafos.append(texto)
 
     # Devolver título y lista de párrafos
     return titulo, parrafos
 
+# Test de la función
 if __name__ == "__main__":
     url_objetivo = "https://www.uma.es/etsi-informatica/"
     

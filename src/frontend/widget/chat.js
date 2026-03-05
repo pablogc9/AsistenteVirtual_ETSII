@@ -2,10 +2,15 @@ const historial = []; // Cada elemento: { role: "user"|"assistant", content: "..
 
 async function sendMessage() {
     const input     = document.getElementById('user-input');
+    const sendBtn   = document.getElementById('send-btn');
     const container = document.getElementById('chat-container');
     const question  = input.value.trim();
 
     if (!question) return;
+
+    // Bloquear la UI mientras se espera la respuesta
+    input.disabled  = true;
+    sendBtn.disabled = true;
 
     // Mostrar mensaje del usuario
     appendMessage('user', question);
@@ -31,12 +36,11 @@ async function sendMessage() {
         // Mantener solo las últimas 3 interacciones (3 preguntas + 3 respuestas = 6 mensajes)
         if (historial.length > 6) historial.splice(0, 2);
 
-
-         // Llamada POST a la API de FastAPI
+        // Llamada POST a la API de FastAPI
         const response = await fetch('http://127.0.0.1:8000/ask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question, historial })  // <-- añadimos historial
+            body: JSON.stringify({ question, historial })
         });
 
         const data = await response.json();
@@ -52,6 +56,11 @@ async function sendMessage() {
         console.error(error);
         container.removeChild(loadingWrapper);
         appendMessage('bot', 'Lo siento, ha ocurrido un error al conectar con el servidor.');
+    } finally {
+        // Restaurar la UI siempre, tanto si hay éxito como si hay error
+        input.disabled   = false;
+        sendBtn.disabled = false;
+        input.focus();
     }
 }
 
@@ -62,12 +71,6 @@ function appendMessage(sender, text, sources = []) {
     wrapper.className = `message-wrapper ${sender}`;
 
     const label = sender === 'user' ? 'Tú' : 'Asistente';
-
-    // Sustitución simple para que los saltos de línea y listas se vean bien
-    let formattedText = text
-    .replace(/\n/g, '<br>') // Cambia saltos de línea por <br>
-    .replace(/\* /g, '• ')   // Cambia asteriscos por puntos de lista
-    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>'); // Cambia **texto** por negrita
 
     // Burbuja principal con el texto de la respuesta
     let html = `
