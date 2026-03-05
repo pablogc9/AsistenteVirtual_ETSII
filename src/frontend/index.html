@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asistente ETSI Informática · UMA</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+    <div class="header-brand">
+        <div class="header-logo">ETSI</div>
+        <div>
+            <div class="header-title">Asistente Virtual</div>
+            <div class="header-subtitle">ETSI Informática · Universidad de Málaga</div>
+        </div>
+    </div>
+    <div class="status-badge">
+        <span class="status-dot"></span>
+        En línea
+    </div>
+</header>
+
+<div id="chat-container">
+    <div class="message-wrapper bot">
+        <div class="sender-label">Asistente</div>
+        <div class="message">
+            ¡Hola! Soy el asistente virtual de la ETSI Informática. Puedo ayudarte con información sobre los grados, normativas, trámites y más. ¿En qué puedo ayudarte?
+        </div>
+    </div>
+</div>
+
+<div id="input-area">
+    <input
+        type="text"
+        id="user-input"
+        placeholder="Escribe tu pregunta aquí..."
+        onkeypress="if(event.key === 'Enter') sendMessage()"
+        autocomplete="off"
+    >
+    <button id="send-btn" onclick="sendMessage()" title="Enviar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+    </button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="chat.js"></script>
+</body>
+</html>
