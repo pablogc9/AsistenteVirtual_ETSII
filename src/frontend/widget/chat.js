@@ -50,7 +50,7 @@ async function sendMessage() {
 
         // Reemplazar el loading por la respuesta real del asistente
         container.removeChild(loadingWrapper);
-        appendMessage('bot', data.answer, data.sources);
+        appendMessage('bot', data.answer, data.sources, data.log_id);
 
     } catch (error) {
         console.error(error);
@@ -64,7 +64,26 @@ async function sendMessage() {
     }
 }
 
-function appendMessage(sender, text, sources = []) {
+async function sendFeedback(logId, score, btn) {
+    const bar     = btn.closest('.feedback-bar');
+    const buttons = bar.querySelectorAll('.feedback-btn');
+    buttons.forEach(b => b.disabled = true);
+
+    try {
+        await fetch('http://127.0.0.1:8000/feedback', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ log_id: logId, score }),
+        });
+        btn.classList.add('feedback-btn--selected');
+        buttons.forEach(b => { if (b !== btn) b.style.display = 'none'; });
+        bar.querySelector('.feedback-label').textContent = '¡Gracias!';
+    } catch {
+        buttons.forEach(b => b.disabled = false);
+    }
+}
+
+function appendMessage(sender, text, sources = [], logId = null) {
     const container = document.getElementById('chat-container');
 
     const wrapper = document.createElement('div');
@@ -116,6 +135,26 @@ function appendMessage(sender, text, sources = []) {
                 </summary>
                 <div class="sources-list">${items}</div>
             </details>`;
+    }
+
+    // Botones de feedback solo para respuestas del bot con log_id
+    if (sender === 'bot' && logId) {
+        html += `
+            <div class="feedback-bar">
+                <span class="feedback-label">¿Fue útil?</span>
+                <button class="feedback-btn" onclick="sendFeedback(${logId}, 1, this)" title="Sí, fue útil">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3H14z"/>
+                        <path d="M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+                    </svg>
+                </button>
+                <button class="feedback-btn" onclick="sendFeedback(${logId}, 0, this)" title="No fue útil">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3H10z"/>
+                        <path d="M17 2h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
+                    </svg>
+                </button>
+            </div>`;
     }
 
     wrapper.innerHTML = html;

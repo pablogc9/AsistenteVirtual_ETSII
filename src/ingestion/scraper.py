@@ -1,10 +1,11 @@
 import requests
 from bs4 import BeautifulSoup
 
+HEADERS = {"User-Agent": "AsistenteETSI/1.0"}
+
 def obtener_titulo_y_parrafos(url: str) -> tuple[str, list[str]]:
-    HEADERS ? {"User_agent": "AsistenteETSI/1.0"}
     # Hacer la petición HTTP a la URL
-    respuesta = requests.get(url)
+    respuesta = requests.get(url, headers=HEADERS, timeout=10)
     # Lanzar excepción si la respuesta tiene código de error (4xx, 5xx)
     respuesta.raise_for_status()
 

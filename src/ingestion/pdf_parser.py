@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from langchain_community.document_loaders import PyPDFLoader
+import pdfplumber
 from langchain_core.documents import Document as LCDocument
 
 from src.ingestion.processor import DocumentProcessor
@@ -11,65 +11,150 @@ from src.ingestion.processor import DocumentProcessor
 
 class PDFProcessor:
     """
-    Procesa PDFs con PyPDFLoader y los transforma en chunks compatibles 
-    con el resto del pipeline (DocumentProcessor + metadatos)
+    Procesa PDFs con pdfplumber y archivos de texto plano (.txt),
+    transformando su contenido en chunks compatibles con el pipeline RAG.
+
+    Mejoras respecto a PyPDFLoader:
+    - Extracción de tablas: cada celda se recupera como texto estructurado,
+      lo que permite indexar datos tabulares (créditos, notas de corte, etc.).
+    - Mejor manejo de codificación: pdfplumber gestiona internamente la
+      conversión de bytes a texto, eliminando el problema del mojibake.
+    - Soporte para .txt: permite añadir documentos curados manualmente a
+      data/raw/ sin necesidad de convertirlos a PDF.
     """
 
     def __init__(
         self,
-        chunk_size: int = 800,
+        chunk_size:    int = 800,
         chunk_overlap: int = 80,
     ) -> None:
         self._processor = DocumentProcessor(
-            chunk_size = chunk_size,
-            chunk_overlap = chunk_overlap,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
 
-    def _process_single_pdf(self, pdf_path: Path) -> List[LCDocument]:
-        """Carga un PDF, procesa cada página y devuelve los chunks resultantes 
-        con metadatos: nombre de archivo, ruta y número de página.
+    # ── Extracción de PDFs ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_page_text(page: "pdfplumber.page.Page") -> str:
         """
-        loader = PyPDFLoader(str(pdf_path))
-        pages: List[LCDocument] = loader.load()
+        Extrae texto de una página combinando el flujo de texto normal con
+        las celdas de todas las tablas detectadas.
 
-        all_chunks: List[LCDocument] = []
-        filename = pdf_path.name
+        Estrategia:
+          1. Texto libre → pdfplumber.extract_text() preserva el orden de
+             lectura natural y maneja encodings complejos.
+          2. Tablas     → extract_tables() recupera cada celda de forma
+             estructurada. Las filas se formatean como
+             'col1 | col2 | col3' para que el modelo las entienda.
+          3. Ambos se concatenan con un separador claro.
+        """
+        # ── Texto libre ───────────────────────────────────────────────────────
+        body_text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+
+        # ── Tablas ────────────────────────────────────────────────────────────
+        table_lines: list[str] = []
+        for table in page.extract_tables():
+            for row in table:
+                if not row:
+                    continue
+                cells = [
+                    str(cell).strip().replace("\n", " ") if cell else ""
+                    for cell in row
+                ]
+                non_empty = [c for c in cells if c]
+                if non_empty:
+                    table_lines.append(" | ".join(non_empty))
+
+        if table_lines:
+            body_text = body_text + "\n\n" + "\n".join(table_lines)
+
+        return body_text
+
+    def _process_single_pdf(self, pdf_path: Path) -> List[LCDocument]:
+        """Carga un PDF y devuelve los chunks con metadatos de página."""
+        filename    = pdf_path.name
         source_path = str(pdf_path)
+        all_chunks: List[LCDocument] = []
 
-        for page_doc in pages:
-            page_text = page_doc.page_content or ""
-            if not page_text.strip():
-                continue
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for page_number, page in enumerate(pdf.pages):
+                    page_text = self._extract_page_text(page)
+                    if not page_text.strip():
+                        continue
 
-            # Número de página que expone PyPDFLoader (suele empezar en 0)
-            page_number = page_doc.metadata.get("page", None)
+                    page_chunks = self._processor.process(
+                        title=filename,
+                        url=source_path,
+                        paragraphs=[page_text],
+                    )
 
-            # Usamos el DocumentoProcessor para hacer el chunking del texto de la página
-            # titulo = nombre de archivo
-            # url = ruta al archivo
-            page_chunks = self._processor.process(
-                title = filename,
-                url = source_path,
-                paragraphs = [page_text],
-            )
+                    for chunk in page_chunks:
+                        meta = dict(chunk.metadata or {})
+                        meta.setdefault("filename",    filename)
+                        meta.setdefault("source_path", source_path)
+                        meta.setdefault("page_number", page_number)
+                        chunk.metadata = meta  # type: ignore[attr-defined]
 
-            # Añadimos metadatos de PDF a cada chunk
-            for chunk in page_chunks:
-                meta = dict(chunk.metadata or {})
-                meta.setdefault("filename", filename)
-                meta.setdefault("source_path", source_path)
-                if page_number is not None:
-                    meta.setdefault("page_number", page_number)
-                chunk.metadata = meta # type: ignore[attr-defined]
+                    all_chunks.extend(page_chunks)
 
-            all_chunks.extend(page_chunks)
+        except Exception as exc:
+            print(f"[PDFProcessor] Error al procesar {pdf_path.name}: {exc}")
 
         return all_chunks
 
+    # ── Extracción de archivos de texto plano ─────────────────────────────────
+
+    def _process_text_file(self, txt_path: Path) -> List[LCDocument]:
+        """
+        Procesa un archivo .txt indexando CADA línea no vacía como un chunk
+        independiente.
+
+        Por qué línea a línea y no el archivo completo:
+          Los archivos de datos curados (datos_maestros.txt) contienen hechos
+          muy concretos y cortos. Si se unen y trocean a 800 chars, varios
+          hechos quedan mezclados en el mismo chunk y la similitud vectorial con
+          queries cortas ("Créditos software?") se diluye.
+          Procesar cada línea por separado garantiza que la búsqueda vectorial
+          encuentre el hecho exacto, ya que el embedding del chunk contiene
+          solo ese hecho y nada más.
+        """
+        filename    = txt_path.name
+        source_path = str(txt_path)
+
+        try:
+            raw_text = txt_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as exc:
+            print(f"[PDFProcessor] Error al leer {txt_path.name}: {exc}")
+            return []
+
+        lines = [ln.strip() for ln in raw_text.splitlines() if len(ln.strip()) >= 30]
+        if not lines:
+            return []
+
+        all_chunks: List[LCDocument] = []
+        for line in lines:
+            chunks = self._processor.process(
+                title=filename,
+                url=source_path,
+                paragraphs=[line],
+            )
+            for chunk in chunks:
+                meta = dict(chunk.metadata or {})
+                meta.setdefault("filename",    filename)
+                meta.setdefault("source_path", source_path)
+                chunk.metadata = meta  # type: ignore[attr-defined]
+            all_chunks.extend(chunks)
+
+        return all_chunks
+
+    # ── Procesado de carpeta completa ─────────────────────────────────────────
+
     def process_folder(self, folder: str | Path) -> List[LCDocument]:
         """
-        Procesa todos los PDFs de una carpeta y devuelve una lista
-        con todos los chunks generados.
+        Procesa todos los PDFs y archivos .txt de una carpeta y devuelve
+        la lista unificada de chunks listos para indexar.
         """
         folder_path = Path(folder)
         if not folder_path.is_dir():
@@ -77,8 +162,17 @@ class PDFProcessor:
 
         all_chunks: List[LCDocument] = []
 
-        for pdf_path in sorted(folder_path.glob("*.pdf")):
-            pdf_chunks = self._process_single_pdf(pdf_path)
-            all_chunks.extend(pdf_chunks)
+        pdfs = sorted(folder_path.glob("*.pdf"))
+        txts = sorted(folder_path.glob("*.txt"))
+
+        print(f"[PDFProcessor] {len(pdfs)} PDF(s) y {len(txts)} TXT(s) encontrados en {folder_path.name}/")
+
+        for pdf_path in pdfs:
+            print(f"  → PDF: {pdf_path.name}")
+            all_chunks.extend(self._process_single_pdf(pdf_path))
+
+        for txt_path in txts:
+            print(f"  → TXT: {txt_path.name}")
+            all_chunks.extend(self._process_text_file(txt_path))
 
         return all_chunks

@@ -339,6 +339,58 @@ details[open].sources summary::before {
     .message-wrapper { max-width: 90%; }
 }
 
+/* ── Feedback ── */
+.feedback-bar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 6px;
+    padding: 0 2px;
+}
+
+.feedback-label {
+    font-size: 0.70rem;
+    color: var(--muted);
+    margin-right: 2px;
+}
+
+.feedback-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.feedback-btn svg {
+    width: 15px;
+    height: 15px;
+    display: block;
+}
+
+.feedback-btn:hover:not(:disabled) {
+    background: #f0f4f8;
+    border-color: var(--uma-blue);
+    color: var(--uma-blue);
+}
+
+.feedback-btn:disabled {
+    cursor: default;
+    opacity: 0.4;
+}
+
+.feedback-btn--selected {
+    opacity: 1 !important;
+    background: #e8f0fb;
+    border-color: var(--uma-blue);
+    color: var(--uma-blue);
+}
+
 /* ── Markdown rendering ── */
 .message ul, .message ol {
     margin: 8px 0 8px 1.2rem;

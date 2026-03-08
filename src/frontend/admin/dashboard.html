@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - ETSI Chatbot</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+
+<!-- ── Sidebar ── -->
+<div class="sidebar d-flex flex-column p-3">
+    <h3>Admin UMA</h3>
+    <hr>
+    <ul class="nav nav-pills flex-column mb-auto">
+        <li class="nav-item">
+            <a href="#" class="nav-link active" onclick="showSection('dashboard', this)">
+                Dashboard
+            </a>
+        </li>
+        <li class="nav-item">
+            <a href="#" class="nav-link text-white" onclick="showSection('config', this)">
+                Configuración
+            </a>
+        </li>
+    </ul>
+    <button class="btn btn-danger mt-auto" onclick="logout()">Cerrar Sesión</button>
+</div>
+
+<!-- ── Contenido principal ── -->
+<div class="content">
+
+    <!-- ═══════════════ SECCIÓN: DASHBOARD ═══════════════ -->
+    <div id="section-dashboard">
+        <h2 class="mb-4">Estado del Sistema</h2>
+
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="card card-stat p-3 bg-white">
+                    <h6>Total Interacciones</h6>
+                    <h2 id="total-interactions">—</h2>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card card-stat p-3 bg-white">
+                    <h6>Gasto de Tokens</h6>
+                    <h2 id="total-tokens">—</h2>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card card-stat p-3 bg-white">
+                    <h6>Satisfacción (Media)</h6>
+                    <h2 id="avg-feedback">—</h2>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card card-stat p-4">
+                    <h5>Distribución de Intenciones</h5>
+                    <canvas id="intentChart"></canvas>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card card-stat p-4">
+                    <h5>Seguridad del Sistema</h5>
+                    <p id="safe-percentage" class="display-4 text-success">—</p>
+                    <p class="text-muted">Mensajes marcados como seguros por el Router</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card card-stat p-4">
+
+                    <!-- Cabecera -->
+                    <div class="d-flex align-items-center justify-content-between mb-3">
+                        <h5 class="mb-0">Interacciones</h5>
+                        <span id="logs-count" class="text-muted small"></span>
+                    </div>
+
+                    <!-- Barra de filtros -->
+                    <div class="row g-2 mb-3 align-items-end">
+                        <div class="col-auto">
+                            <label class="form-label small mb-1 text-muted">Intención</label>
+                            <select id="filter-intent" class="form-select form-select-sm" onchange="applyFilters()">
+                                <option value="">Todas</option>
+                                <option value="academica">Académica</option>
+                                <option value="saludo">Saludo</option>
+                                <option value="malicioso">Malicioso</option>
+                            </select>
+                        </div>
+                        <div class="col-auto">
+                            <label class="form-label small mb-1 text-muted">Feedback</label>
+                            <select id="filter-feedback" class="form-select form-select-sm" onchange="applyFilters()">
+                                <option value="">Todos</option>
+                                <option value="1">Positivo</option>
+                                <option value="0">Negativo</option>
+                                <option value="none">Sin valorar</option>
+                            </select>
+                        </div>
+                        <div class="col-auto">
+                            <label class="form-label small mb-1 text-muted">Seguridad</label>
+                            <select id="filter-safety" class="form-select form-select-sm" onchange="applyFilters()">
+                                <option value="">Todas</option>
+                                <option value="true">Seguro</option>
+                                <option value="false">Inseguro</option>
+                            </select>
+                        </div>
+                        <div class="col-auto">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="resetFilters()">
+                                Limpiar filtros
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Tabla con altura fija -->
+                    <div class="logs-table-container">
+                        <table class="table table-hover table-sm mb-0">
+                            <thead class="logs-thead">
+                                <tr>
+                                    <th>Fecha</th>
+                                    <th>Emisor</th>
+                                    <th>Mensaje</th>
+                                    <th>Intención</th>
+                                    <th>Tokens</th>
+                                    <th title="Puntuación CrossEncoder del fragmento más relevante">Score ↑</th>
+                                    <th>Feedback</th>
+                                </tr>
+                            </thead>
+                            <tbody id="logs-table-body"></tbody>
+                        </table>
+                    </div>
+
+                    <!-- Paginación -->
+                    <div class="d-flex align-items-center justify-content-between mt-3">
+                        <span id="pagination-info" class="text-muted small"></span>
+                        <ul class="pagination pagination-sm mb-0" id="pagination-controls"></ul>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════ SECCIÓN: CONFIGURACIÓN ═══════════════ -->
+    <div id="section-config" class="d-none">
+        <h2 class="mb-4">Configuración Dinámica</h2>
+        <p class="text-muted mb-4">
+            Los cambios se aplican en caliente sin reiniciar el servidor.
+            Si se dejan vacíos, el sistema usará los valores por defecto del código.
+        </p>
+
+        <div class="card card-stat p-4 mb-4">
+            <h5 class="mb-3">Modelo LLM</h5>
+            <div class="mb-3">
+                <label for="input-model" class="form-label fw-semibold">Nombre del modelo (Groq)</label>
+                <select id="input-model" class="form-select">
+                    <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (rápido, por defecto)</option>
+                    <option value="llama-3.1-70b-versatile">llama-3.1-70b-versatile (más capaz)</option>
+                    <option value="llama3-70b-8192">llama3-70b-8192</option>
+                    <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="card card-stat p-4 mb-4">
+            <h5 class="mb-3">System Prompt</h5>
+            <div class="mb-3">
+                <label for="input-prompt" class="form-label fw-semibold">Instrucciones del asistente</label>
+                <textarea
+                    id="input-prompt"
+                    class="form-control font-monospace"
+                    rows="14"
+                    placeholder="Cargando prompt actual…"
+                ></textarea>
+                <div class="form-text">
+                    Este texto define el comportamiento y las restricciones del asistente.
+                </div>
+            </div>
+        </div>
+
+        <!-- Feedback al guardar -->
+        <div id="config-alert" class="alert d-none" role="alert"></div>
+
+        <div class="d-flex gap-2">
+            <button class="btn btn-primary" onclick="saveConfig()">
+                Guardar cambios
+            </button>
+            <button class="btn btn-outline-secondary" onclick="loadConfig()">
+                Recargar valores actuales
+            </button>
+        </div>
+    </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+/* ── Estilos compartidos ── */
+body {
+    background-color: #f8f9fa;
+}
+
+/* ── Dashboard ── */
+.sidebar {
+    height: 100vh;
+    background: #003b5c;
+    color: white;
+    position: fixed;
+    width: 250px;
+}
+
+.content {
+    margin-left: 260px;
+    padding: 20px;
+}
+
+.card-stat {
+    border: none;
+    border-radius: 15px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+}
+
+/* ── Sidebar: todos los links siempre blancos ── */
+.sidebar .nav-link {
+    color: white !important;
+}
+
+.sidebar .nav-link.active {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+.sidebar .nav-link:hover:not(.active) {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ── Config: monospace en el textarea del prompt ── */
+.font-monospace {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+
+/* ── Tabla de logs: contenedor con altura fija ── */
+.logs-table-container {
+    max-height: 500px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+}
+
+/* Cabecera pegada al hacer scroll */
+.logs-thead th {
+    position: sticky;
+    top: 0;
+    background: #fff;
+    z-index: 2;
+    border-bottom: 2px solid #dee2e6 !important;
+}
+
+/* ── Tabla de logs: agrupación pregunta / respuesta ── */
+.log-question-row td {
+    border-bottom: none !important;
+    padding-bottom: 2px !important;
+}
+
+.log-answer-row td {
+    border-top: none !important;
+    padding-top: 2px !important;
+    border-bottom: 2px solid #dee2e6 !important;
+}
+
+.log-question-row td:first-child {
+    vertical-align: middle;
+    color: #6c757d;
+    font-size: 0.8rem;
+}
+
+/* ── Score badge en tabla de logs ── */
+.score-badge {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 0.78rem;
+    background: #e8f5e9;
+    color: #2e7d32;
+    border-radius: 4px;
+    padding: 1px 6px;
+}
+
+/* ── Login ── */
+.login-body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background-color: #f0f4f8;
+}
+
+.login-card {
+    width: 100%;
+    max-width: 400px;
+    border: none;
+    border-radius: 16px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+.login-header {
+    background: #003b5c;
+    color: white;
+    border-radius: 16px 16px 0 0;
+    padding: 2rem;
+    text-align: center;
+}
+
+.login-header h4 { margin: 0; font-weight: 600; }
+.login-header p  { margin: 0.25rem 0 0; font-size: 0.85rem; opacity: 0.8; }

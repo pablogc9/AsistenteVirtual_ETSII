@@ -10,4 +10,5 @@ sentence-transformers>=2.2.0
 langchain-groq>=0.1.0
 python-dotenv>=1.0.0
 pypdf
+pdfplumber>=0.10.0
 python-jose[cryptography]>=3.3.0

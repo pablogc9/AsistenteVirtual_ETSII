@@ -15,6 +15,7 @@ from src.database.vector_store import VectorStoreManager
 from src.database.db_manager import DBManager
 from src.core.llm_engine import ChatEngine
 from src.core.router import InputRouter
+from src.core.retriever import AdvancedRetriever
 
 
 # --------------------------
@@ -38,17 +39,17 @@ app.mount("/pdfs", StaticFiles(directory="data/raw"), name="pdfs")
 # Instancias globales
 # --------------------------
 
-vector_store = VectorStoreManager()
-chat_engine = ChatEngine()
-router = InputRouter()
-db_manager = DBManager()
+vector_store       = VectorStoreManager()
+chat_engine        = ChatEngine()
+router             = InputRouter()
+db_manager         = DBManager()
+advanced_retriever = AdvancedRetriever(vector_store)
 
 
 # --------------------------
 # Constantes
 # --------------------------
 
-DISTANCE_THRESHOLD  = 0.6
 NO_CONTEXT_MSG      = "Lo siento, no he encontrado información oficial sobre esa pregunta en los documentos de la ETSI Informática."
 BASE_URL            = os.getenv("BASE_URL", "http://127.0.0.1:8000")
 MODEL_NAME          = "llama-3.1-8b-instant"
@@ -69,6 +70,10 @@ class AskRequest(BaseModel):
 class FeedbackRequest(BaseModel):
     log_id: int
     score:  int   # 1 = 👍, 0 = 👎
+
+class ConfigUpdateRequest(BaseModel):
+    system_prompt: str | None = None
+    model_name:    str | None = None
 
 
 # --------------------------
@@ -115,15 +120,14 @@ async def ask(request: AskRequest):
             model_name="router",
             is_safe=route.is_safe,
             tokens_used=None,
+            rerank_score=None,
         )
         return {"answer": route.direct_response, "sources": [], "log_id": log_id}
 
-    # --- Capa de RAG ---
-    fragments = vector_store.search(request.question, k=5)
+    # --- Capa de RAG con Multi-Query + Re-ranking ---
+    fragments, best_rerank_score = advanced_retriever.retrieve(request.question)
 
-    # Si todos los fragmentos superan el umbral de distancia, la pregunta
-    # está demasiado lejos del contenido indexado y no respondemos
-    if not fragments or all(frag["distance"] > DISTANCE_THRESHOLD for frag in fragments):
+    if not fragments:
         log_id = db_manager.log_interaction(
             question=request.question,
             intent=route.intent.value,
@@ -131,6 +135,7 @@ async def ask(request: AskRequest):
             model_name="none",
             is_safe=route.is_safe,
             tokens_used=None,
+            rerank_score=None,
         )
         return {"answer": NO_CONTEXT_MSG, "sources": [], "log_id": log_id}
 
@@ -149,8 +154,14 @@ async def ask(request: AskRequest):
         sources.append({"title": title, "url": url})
 
     # -- Capa de LLM ---
+    # Leer config dinámica; si la clave no existe en DB usa los valores por defecto
+    active_prompt     = db_manager.get_config("system_prompt") or None
+    active_model_name = db_manager.get_config("model_name")    or None
+
     answer, tokens_used = chat_engine.generate_answer(
-        request.question, fragments, request.historial
+        request.question, fragments, request.historial,
+        system_prompt=active_prompt,
+        model_name=active_model_name,
     )
 
     log_id = db_manager.log_interaction(
@@ -160,6 +171,7 @@ async def ask(request: AskRequest):
         model_name=MODEL_NAME,
         is_safe=route.is_safe,
         tokens_used=tokens_used,
+        rerank_score=best_rerank_score,
     )
 
     return {"answer": answer, "sources": sources, "log_id": log_id}
@@ -176,3 +188,51 @@ async def feedback(request: FeedbackRequest):
 @app.get("/admin/stats")
 async def admin_stats(current_admin: str = Depends(get_current_admin)):
     return db_manager.get_admin_stats()
+
+
+@app.get("/admin/config")
+async def get_config(current_admin: str = Depends(get_current_admin)):
+    """
+    Devuelve la configuración activa del sistema.
+    Si una clave no se ha editado todavía, indica que se está usando el valor por defecto.
+    """
+    from src.core.llm_engine import SYSTEM_PROMPT
+    stored = db_manager.get_all_config()
+    return {
+        "system_prompt": stored.get("system_prompt", SYSTEM_PROMPT),
+        "model_name":    stored.get("model_name",    MODEL_NAME),
+    }
+
+
+@app.put("/admin/config")
+async def update_config(
+    request:       ConfigUpdateRequest,
+    current_admin: str = Depends(get_current_admin),
+):
+    """
+    Actualiza la configuración del sistema en caliente (sin reiniciar el servidor).
+    Solo se guardan los campos que vengan con valor en el body.
+    """
+    if request.system_prompt is not None:
+        db_manager.set_config("system_prompt", request.system_prompt)
+    if request.model_name is not None:
+        db_manager.set_config("model_name", request.model_name)
+    return {"ok": True, "updated": db_manager.get_all_config()}
+
+
+@app.get("/admin/logs")
+async def get_logs(
+    page:          int        = 1,
+    page_size:     int        = 10,
+    intent:        str | None = None,
+    feedback:      str | None = None,   # "1" | "0" | "none"
+    is_safe:       bool | None = None,
+    current_admin: str        = Depends(get_current_admin),
+):
+    return db_manager.get_recent_logs(
+        page=page,
+        page_size=page_size,
+        intent=intent or None,
+        feedback=feedback or None,
+        is_safe=is_safe,
+    )
