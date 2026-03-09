@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import Any, Mapping
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
@@ -10,7 +10,20 @@ from sentence_transformers import CrossEncoder
 from src.database.vector_store import VectorStoreManager
 
 
-# ── Prompt de generación de variaciones ──────────────────────────────────────
+# ── Prompts ───────────────────────────────────────────────────────────────────
+
+_REWRITE_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        "Dado el historial de conversación y la nueva pregunta del usuario, "
+        "reescribe la pregunta para que sea completamente autocontenida: "
+        "sustituye pronombres ambiguos ('ese', 'el otro', 'ambos', 'eso', etc.) "
+        "por sus referentes explícitos tomados del historial.\n"
+        "Si la pregunta ya es clara por sí sola, devuélvela sin modificar.\n"
+        "Responde ÚNICAMENTE con la pregunta reescrita, sin explicaciones.",
+    ),
+    ("human", "Historial reciente:\n{history}\n\nNueva pregunta: {question}"),
+])
 
 _MULTI_QUERY_PROMPT = ChatPromptTemplate.from_messages([
     (
@@ -28,21 +41,45 @@ _MULTI_QUERY_PROMPT = ChatPromptTemplate.from_messages([
     ("human", "{question}"),
 ])
 
-# Umbral de distancia vectorial para filtrar candidatos antes del re-ranking.
-# Un valor más permisivo (0.75) asegura que el reranker multilingüe reciba
-# suficientes candidatos incluso para queries cortas o ambiguas.
+_HYDE_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        "Eres un asistente experto en la ETSI Informática de la Universidad de Málaga.\n"
+        "Genera un fragmento breve (2-3 frases) que parezca extraído de un documento "
+        "oficial de la ETSI y que respondería directamente a la pregunta del usuario.\n"
+        "No uses frases como 'según los documentos' ni meta-referencias: escribe "
+        "directamente como si fuera el texto del documento.\n"
+        "Responde ÚNICAMENTE con el fragmento, sin explicaciones adicionales.",
+    ),
+    ("human", "{question}"),
+])
+
+# ── Constantes ────────────────────────────────────────────────────────────────
+
+# Máxima distancia coseno permitida para llegar al re-ranker.
 _DISTANCE_THRESHOLD = 0.75
+
+# Score mínimo del CrossEncoder para que un fragmento se envíe al LLM.
+# Valores típicos del modelo mmarco: relevante > 0, irrelevante < -3.
+_MIN_RERANK_SCORE = -2.0
 
 
 class AdvancedRetriever:
     """
-    Pipeline de recuperación avanzado: Multi-Query + Re-ranking con CrossEncoder.
+    Pipeline de recuperación avanzado con cuatro mejoras sobre la búsqueda
+    vectorial simple:
 
-    Flujo:
-        1. Genera 3 variaciones de la pregunta con el LLM (Multi-Query).
-        2. Busca en ChromaDB con la pregunta original + las 3 variaciones.
-        3. Consolida y deduplica los candidatos (hasta 4 × candidates_per_query).
-        4. Re-rankea con un CrossEncoder ligero y devuelve los Top-K finales.
+    1. Reescritura conversacional  – desambigua la query usando el historial
+                                     antes de buscar (ej. 'el otro grado' →
+                                     'el Grado en Ingeniería Informática').
+    2. Multi-Query                 – genera 3 variaciones semánticas con el LLM
+                                     para ampliar la cobertura de recuperación.
+    3. HyDE                        – genera un documento hipotético que sirve
+                                     como query adicional en espacio de embeddings
+                                     de respuestas (no de preguntas).
+    4. Re-ranking con CrossEncoder – puntúa cada candidato con un modelo
+                                     multilingüe y filtra los irrelevantes
+                                     (score < _MIN_RERANK_SCORE).
     """
 
     def __init__(
@@ -58,15 +95,43 @@ class AdvancedRetriever:
         self._top_k                = top_k
 
         llm = ChatGroq(model=llm_model, temperature=0)
-        self._query_chain = _MULTI_QUERY_PROMPT | llm
-        self._reranker    = CrossEncoder(reranker_model)
+        self._rewrite_chain = _REWRITE_PROMPT     | llm
+        self._query_chain   = _MULTI_QUERY_PROMPT | llm
+        self._hyde_chain    = _HYDE_PROMPT         | llm
+        self._reranker      = CrossEncoder(reranker_model)
 
-    # ── Paso 1: generación de variaciones ────────────────────────────────────
+    # ── Paso 0: reescritura conversacional ───────────────────────────────────
 
-    def _generate_variations(
-        self, 
+    def _rewrite_with_history(
+        self,
         question: str,
-    ) -> list[str]:
+        historial: list[Mapping[str, str]],
+    ) -> str:
+        """
+        Si hay historial, reescribe la pregunta para que sea autocontenida.
+        Usa solo los últimos 6 turnos (3 intercambios) para no sobrecargar el prompt.
+        """
+        if not historial:
+            return question
+
+        recent = historial[-6:]
+        history_text = "\n".join(
+            f"{'Usuario' if m.get('role') in ('human', 'user') else 'Asistente'}: {m.get('content', '')}"
+            for m in recent
+        )
+        try:
+            response = self._rewrite_chain.invoke({
+                "history":  history_text,
+                "question": question,
+            })
+            rewritten = response.content.strip()
+            return rewritten if rewritten else question
+        except Exception:
+            return question
+
+    # ── Paso 1a: variaciones Multi-Query ─────────────────────────────────────
+
+    def _generate_variations(self, question: str) -> list[str]:
         """Devuelve hasta 3 reformulaciones semánticas de la pregunta."""
         try:
             response = self._query_chain.invoke({"question": question})
@@ -79,18 +144,31 @@ class AdvancedRetriever:
         except Exception:
             return []
 
+    # ── Paso 1b: documento hipotético (HyDE) ─────────────────────────────────
+
+    def _generate_hyde(self, question: str) -> str:
+        """
+        Genera un fragmento de documento hipotético que respondería la pregunta.
+
+        Por qué funciona: buscar con un texto que parece una *respuesta* produce
+        embeddings más próximos a los documentos reales que buscar con la pregunta.
+        """
+        try:
+            response = self._hyde_chain.invoke({"question": question})
+            return response.content.strip()
+        except Exception:
+            return ""
+
     # ── Paso 2: búsqueda multi-query y deduplicación ─────────────────────────
 
     def _search_and_deduplicate(
-        self, 
-        queries: list[str]
+        self,
+        queries: list[str],
     ) -> list[dict[str, Any]]:
         """
-        Ejecuta una búsqueda vectorial para cada query y consolida los resultados.
+        Ejecuta una búsqueda vectorial por cada query y consolida los resultados.
 
-        La deduplicación usa SHA-256 del texto (idéntico al ID interno de ChromaDB).
-        Los candidatos con distancia vectorial > _DISTANCE_THRESHOLD se descartan
-        antes de llegar al re-ranker, ahorrando tiempo de inferencia.
+        Deduplicación por SHA-256 del texto; filtra candidatos con distancia > umbral.
         """
         seen:       set[str]             = set()
         candidates: list[dict[str, Any]] = []
@@ -100,9 +178,7 @@ class AdvancedRetriever:
             for result in results:
                 if result.get("distance", 1.0) > _DISTANCE_THRESHOLD:
                     continue
-                doc_id = hashlib.sha256(
-                    result["text"].encode("utf-8")
-                ).hexdigest()
+                doc_id = hashlib.sha256(result["text"].encode("utf-8")).hexdigest()
                 if doc_id not in seen:
                     seen.add(doc_id)
                     candidates.append(result)
@@ -112,18 +188,17 @@ class AdvancedRetriever:
     # ── Paso 3: re-ranking con CrossEncoder ──────────────────────────────────
 
     def _rerank(
-        self, 
-        question: str, 
-        candidates: list[dict[str, Any]]
+        self,
+        question:   str,
+        candidates: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """
-        Puntúa cada candidato con el CrossEncoder y devuelve el Top-K.
+        Puntúa cada candidato con el CrossEncoder y devuelve el Top-K filtrado.
 
-        El CrossEncoder evalúa el par (pregunta, fragmento) como un único
-        input, lo que produce puntuaciones de relevancia mucho más precisas
-        que la similitud coseno.
-
-        Si el re-ranking falla, hace fallback al orden de distancia vectorial.
+        Solo se devuelven fragmentos con rerank_score >= _MIN_RERANK_SCORE,
+        evitando que contexto claramente irrelevante llegue al LLM.
+        Si ninguno supera el umbral, devuelve lista vacía → el sistema
+        responde 'no tengo información'.
         """
         if not candidates:
             return []
@@ -135,42 +210,55 @@ class AdvancedRetriever:
             for candidate, score in zip(candidates, scores):
                 candidate["rerank_score"] = float(score)
 
-            ranked = sorted(
-                candidates, key=lambda x: x["rerank_score"], reverse=True
-            )
-            return ranked[: self._top_k]
+            ranked = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
+
+            # Filtrar por umbral de relevancia mínima
+            filtered = [c for c in ranked[: self._top_k] if c["rerank_score"] >= _MIN_RERANK_SCORE]
+            return filtered
 
         except Exception:
-            # Fallback: ordena por distancia vectorial ascendente
+            # Fallback: ordena por distancia vectorial ascendente sin filtro de score
             for c in candidates:
                 c["rerank_score"] = 0.0
-            sorted_by_dist = sorted(
-                candidates, key=lambda x: x.get("distance", 1.0)
-            )
-            return sorted_by_dist[: self._top_k]
+            return sorted(candidates, key=lambda x: x.get("distance", 1.0))[: self._top_k]
 
     # ── Método principal ──────────────────────────────────────────────────────
 
     def retrieve(
-        self, 
-        question: str
+        self,
+        question:  str,
+        historial: list[Mapping[str, str]] | None = None,
     ) -> tuple[list[dict[str, Any]], float]:
         """
-        Orquesta el pipeline completo.
+        Orquesta el pipeline completo de recuperación.
 
-        Returns:
-            fragments  – Top-K fragmentos re-rankeados listos para el LLM.
-            best_score – Puntuación CrossEncoder del fragmento más relevante
-                         (útil para auditar calidad en el dashboard).
+        Parámetros:
+            question  – Pregunta original del usuario.
+            historial – Historial de la conversación (para reescritura contextual).
+
+        Devuelve:
+            fragments  – Top-K fragmentos relevantes listos para el LLM.
+            best_score – Score CrossEncoder del mejor fragmento (para auditoría).
         """
-        variations  = self._generate_variations(question)
-        all_queries = [question] + variations
+        # 0. Reescritura conversacional (solo si hay historial)
+        standalone = self._rewrite_with_history(question, historial or [])
 
+        # 1. Multi-Query + HyDE → pool de queries diversas
+        variations = self._generate_variations(standalone)
+        hyde       = self._generate_hyde(standalone)
+
+        all_queries = [standalone] + variations
+        if hyde:
+            all_queries.append(hyde)
+
+        # 2. Búsqueda vectorial + deduplicación
         candidates = self._search_and_deduplicate(all_queries)
         if not candidates:
             return [], 0.0
 
-        top        = self._rerank(question, candidates)
+        # 3. Re-ranking con filtro de score mínimo
+        # El CrossEncoder evalúa relevancia con la pregunta standalone (más específica)
+        top        = self._rerank(standalone, candidates)
         best_score = top[0]["rerank_score"] if top else 0.0
 
         return top, best_score

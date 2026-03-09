@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import List
 
@@ -151,25 +152,58 @@ class PDFProcessor:
 
     # ── Procesado de carpeta completa ─────────────────────────────────────────
 
+    @staticmethod
+    def _load_pdf_sources(folder_path: Path) -> dict:
+        """
+        Lee pdf_sources.json si existe (generado por crawl_etsi.py).
+        Contiene, por cada PDF, la URL de la página web que lo enlazaba,
+        lo que permite enriquecer los metadatos de los chunks.
+        """
+        sources_file = folder_path / "pdf_sources.json"
+        if sources_file.exists():
+            try:
+                return json.loads(sources_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
     def process_folder(self, folder: str | Path) -> List[LCDocument]:
         """
         Procesa todos los PDFs y archivos .txt de una carpeta y devuelve
         la lista unificada de chunks listos para indexar.
+
+        Si existe pdf_sources.json (generado por el crawler), añade a cada
+        chunk los metadatos de la página web de origen del PDF.
         """
         folder_path = Path(folder)
         if not folder_path.is_dir():
             raise ValueError(f"La ruta {folder_path} no es una carpeta válida.")
 
         all_chunks: List[LCDocument] = []
+        pdf_sources = self._load_pdf_sources(folder_path)
 
         pdfs = sorted(folder_path.glob("*.pdf"))
-        txts = sorted(folder_path.glob("*.txt"))
+        txts = [t for t in sorted(folder_path.glob("*.txt")) if t.name != "pdf_sources.json"]
 
         print(f"[PDFProcessor] {len(pdfs)} PDF(s) y {len(txts)} TXT(s) encontrados en {folder_path.name}/")
+        if pdf_sources:
+            print(f"[PDFProcessor] pdf_sources.json encontrado — {len(pdf_sources)} entrada(s) de origen web")
 
         for pdf_path in pdfs:
             print(f"  → PDF: {pdf_path.name}")
-            all_chunks.extend(self._process_single_pdf(pdf_path))
+            chunks = self._process_single_pdf(pdf_path)
+
+            # Enriquecer con metadatos de origen web si están disponibles
+            source_meta = pdf_sources.get(pdf_path.name, {})
+            if source_meta:
+                for chunk in chunks:
+                    meta = dict(chunk.metadata or {})
+                    meta.setdefault("parent_url",   source_meta.get("parent_url", ""))
+                    meta.setdefault("parent_title", source_meta.get("parent_title", ""))
+                    meta.setdefault("pdf_url",      source_meta.get("source_url", ""))
+                    chunk.metadata = meta  # type: ignore[attr-defined]
+
+            all_chunks.extend(chunks)
 
         for txt_path in txts:
             print(f"  → TXT: {txt_path.name}")

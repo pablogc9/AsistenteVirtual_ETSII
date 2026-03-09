@@ -125,7 +125,8 @@ async def ask(request: AskRequest):
         return {"answer": route.direct_response, "sources": [], "log_id": log_id}
 
     # --- Capa de RAG con Multi-Query + Re-ranking ---
-    fragments, best_rerank_score = advanced_retriever.retrieve(request.question)
+    historial_dicts = [m.model_dump() for m in request.historial]
+    fragments, best_rerank_score = advanced_retriever.retrieve(request.question, historial_dicts)
 
     if not fragments:
         log_id = db_manager.log_interaction(
