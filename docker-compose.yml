@@ -1,0 +1,43 @@
+# Orquestación Docker: API FastAPI + Neo4j
+
+services:
+  # ── API FastAPI ───────────────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: etsi_asistente_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+    volumes:
+      - ./data:/app/data
+      - hf_cache:/cache/huggingface
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Neo4j (grafo de conocimiento) ─────────────────────────────────────────
+  neo4j:
+    image: neo4j:5
+    container_name: etsi_asistente_neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  hf_cache:

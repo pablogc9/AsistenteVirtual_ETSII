@@ -1,0 +1,24 @@
+# Entornos virtuales y caches de Python
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secretos (se inyectan vía env_file en docker-compose, NUNCA en la imagen)
+.env
+.env.*
+
+# Datos generados: se montan como volumen, no se copian dentro de la imagen
+data/
+
+# Metadatos de IDE y control de versiones
+.vscode/
+.idea/
+.git/
+.gitignore
+
+# Scripts de host (ingesta/evaluación) y pruebas: no van en la imagen
+scripts/
+tests/

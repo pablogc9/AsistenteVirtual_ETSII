@@ -15,13 +15,7 @@ except ImportError:  # pragma: no cover - fallback cuando langchain_core no est�
 
 
 class VectorStoreManager:
-    """
-    Gestor sencillo de un almacén vectorial en ChromaDB con persistencia en disco.
-
-    - Inicializa un cliente persistente en `data/chroma_db`.
-    - Usa un modelo de embeddings basado en Sentence Transformers (HuggingFace).
-    - Permite añadir documentos (chunks) y hacer búsquedas de similitud.
-    """
+    """Gestor de ChromaDB con persistencia en disco y embeddings multilingües."""
 
     def __init__(
         self,
@@ -29,22 +23,18 @@ class VectorStoreManager:
         persist_directory: str | None = None,
         embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     ) -> None:
-        # Carpeta raíz del proyecto (.. / .. desde src/database/)
         project_root = Path(__file__).resolve().parents[2]
         default_dir = project_root / "data" / "chroma_db"
 
         self.persist_directory = Path(persist_directory) if persist_directory else default_dir
         self.persist_directory.mkdir(parents=True, exist_ok=True)
 
-        # Cliente persistente de ChromaDB
         self._client = chromadb.PersistentClient(path=str(self.persist_directory))
 
-        # Función de embeddings basada en un modelo de HuggingFace (Sentence Transformers)
         self._embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=embedding_model
         )
 
-        # Colección donde guardaremos los documentos
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
             embedding_function=self._embedding_function,
@@ -55,14 +45,7 @@ class VectorStoreManager:
         chunks: Iterable[LCDocument],
         metadatas: Iterable[Mapping[str, Any]] | None = None,
     ) -> None:
-        """
-        Añade una lista de chunks (por ejemplo, los `Document`s del DocumentProcessor)
-        al almacén vectorial.
-
-        - `chunks`: iterable de documentos con atributo `.page_content`.
-        - `metadatas`: opcionalmente, iterable de diccionarios de metadatos. Si no se
-          proporciona, se intentan usar los metadatos del propio chunk.
-        """
+        """Añadir chunks al almacén vectorial con upsert idempotente por hash de contenido."""
         texts: List[str] = []
         metas: List[Mapping[str, Any]] = []
 
@@ -86,15 +69,10 @@ class VectorStoreManager:
         if not texts:
             return
 
-        # IDs deterministas basados en el contenido del texto.
-        # Si `page_content` es idéntico, el hash (y por tanto el ID) será el mismo.
         ids: List[str] = [
             hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts
         ]
 
-        # Chroma exige que los IDs sean únicos dentro de una misma operación.
-        # Si hay chunks duplicados (mismo texto => mismo hash) en la misma subida,
-        # los colapsamos aquí para que la operación sea idempotente.
         unique_ids: List[str] = []
         unique_texts: List[str] = []
         unique_metas: List[Mapping[str, Any]] = []
@@ -108,7 +86,6 @@ class VectorStoreManager:
             unique_texts.append(text)
             unique_metas.append(meta)
 
-        # Con IDs deterministas, upsert hace la operación idempotente (evita duplicados).
         self._collection.upsert(
             ids=unique_ids,
             documents=unique_texts,
@@ -116,14 +93,7 @@ class VectorStoreManager:
         )
 
     def search(self, query: str, k: int = 3) -> List[dict[str, Any]]:
-        """
-        Devuelve los `k` fragmentos más similares a la `query`.
-
-        Retorna una lista de diccionarios con:
-        - `text`: contenido del fragmento.
-        - `metadata`: metadatos asociados.
-        - `distance`: distancia en el espacio vectorial (más pequeña = más similar).
-        """
+        """Devolver los k fragmentos más similares a la consulta."""
         if not query:
             return []
 

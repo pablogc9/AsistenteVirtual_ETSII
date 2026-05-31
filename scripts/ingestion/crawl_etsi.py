@@ -4,21 +4,29 @@ Crawler e Ingesta Híbrida — ETSI Informática (UMA)
 ===================================================
 
 Recorre el dominio de la ETSI extrayendo:
-  · Contenido HTML  → chunking + ingesta directa en ChromaDB
+  · Contenido HTML  → se guarda como markdown en data/processed/ (web__*.md)
   · Archivos PDF    → descarga en data/raw/ con metadatos de origen
+
+El crawler NO escribe en ChromaDB: todo el contenido (PDFs y webs) se ingesta
+después con `ingest_markdown.py`, que es el único punto de ingesta y produce la
+colección «etsi_hibrida» con chunking jerárquico y metadatos enriquecidos.
+
+Flujo completo:
+    crawl_etsi  →  pdf_to_markdown  →  ingest_markdown
 
 Características:
   · Estado persistente en data/crawl_state.json (reanudable si se interrumpe)
   · Deduplicación de URLs y PDFs (hash SHA-256 del contenido)
   · Rate-limiting configurable para no saturar el servidor
   · Filtrado de ruido HTML (menús, pies de página, scripts)
-  · Registro de la página web que enlazaba cada PDF (vital para el contexto)
+  · Registro de la página web que enlazaba cada PDF (trazabilidad del origen)
+  · Conversión de HTML a markdown preservando la jerarquía de encabezados
 
-Uso:
-    python crawl_etsi.py               # Crawl completo (reanuda si hay estado)
-    python crawl_etsi.py --reset       # Empieza desde cero (borra estado previo)
-    python crawl_etsi.py --dry-run     # Solo imprime URLs descubiertas, no ingesta
-    python crawl_etsi.py --no-ingest   # Descarga todo pero no toca ChromaDB
+Uso (ejecutar desde la raíz del proyecto):
+    python -m scripts.ingestion.crawl_etsi              # Crawl completo (reanudable)
+    python -m scripts.ingestion.crawl_etsi --reset      # Empieza desde cero
+    python -m scripts.ingestion.crawl_etsi --dry-run    # Solo descubre, no escribe
+    python -m scripts.ingestion.crawl_etsi --no-save    # PDFs sí, markdown web no
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import time
 from collections import deque
 from pathlib import Path
@@ -44,22 +53,31 @@ load_dotenv()
 START_URLS: list[str] = [
     "https://www.uma.es/etsi-informatica/",
     "https://www.uma.es/informatica-matematicas/",
+    "https://www.uma.es/grado-en-ingenieria-de-la-salud/",
+    "https://www.uma.es/master-en-ingenieria-del-software-e-inteligencia-artificial/",
+    "https://www.uma.es/master-en-ingenieria-informatica/",
+    "https://www.uma.es/master-en-ciberseguridad/",
 ]
 
-# Solo se siguen enlaces que empiezan por alguno de estos prefijos.
-# Añadir aquí cualquier sección adicional de la web que interese indexar.
+# Prefijos de URL permitidos en el crawl.
 ALLOWED_PREFIXES: list[str] = [
     "https://www.uma.es/etsi-informatica/",
-    "https://www.uma.es/etsi-informatica",                              # sin trailing slash
+    "https://www.uma.es/etsi-informatica",                              
     "https://www.uma.es/grado-en-ingenieria-del-software/",
     "https://www.uma.es/grado-en-ingenieria-informatica/",
     "https://www.uma.es/grado-en-ciberseguridad-e-inteligencia-artificial/",
+    "https://www.uma.es/grado-en-ingenieria-de-la-salud/",
     "https://www.uma.es/informatica-matematicas/",
+    "https://www.uma.es/master-en-ingenieria-del-software-e-inteligencia-artificial/",
+    "https://www.uma.es/master-en-ingenieria-informatica/",
+    "https://www.uma.es/master-en-ciberseguridad/"
 ]
 
-PDF_DIR    = Path("data/raw")
-STATE_FILE = Path("data/crawl_state.json")
-PDF_SOURCES = PDF_DIR / "pdf_sources.json"
+PDF_DIR       = Path("data/raw")
+PROCESSED_DIR = Path("data/processed")
+STATE_FILE    = Path("data/crawl_state.json")
+PDF_SOURCES   = PDF_DIR / "pdf_sources.json"
+WEB_SOURCES   = PDF_DIR / "web_sources.json"   # {nombre_md: source_url}
 
 DELAY_SECONDS = 1.5   # pausa entre peticiones (segundos)
 MAX_PAGES     = 500   # límite de seguridad para evitar loops infinitos
@@ -151,9 +169,19 @@ def is_skippable(url: str) -> bool:
 
 
 def safe_filename(url: str) -> str:
-    """Convierte una URL de PDF en un nombre de archivo seguro."""
+    """
+    Convierte una URL de PDF en un nombre de archivo seguro.
+
+    Garantiza la extensión .pdf aunque la URL no la incluya (caso típico de
+    PDFs servidos en rutas sin extensión, detectados por Content-Type). Sin
+    esto, `pdf_to_markdown` —que hace glob("*.pdf")— los ignoraría.
+    """
     name = Path(urlparse(url).path).name
-    return name if name else sha256_bytes(url.encode())[:16] + ".pdf"
+    if not name:
+        name = sha256_bytes(url.encode())[:16]
+    if not name.lower().endswith(".pdf"):
+        name = f"{name}.pdf"
+    return name
 
 
 def extract_links(soup: BeautifulSoup, current_url: str) -> set[str]:
@@ -169,14 +197,18 @@ def extract_links(soup: BeautifulSoup, current_url: str) -> set[str]:
     return links
 
 
-def extract_content(soup: BeautifulSoup, url: str) -> tuple[str, list[str]]:
+def extract_markdown(soup: BeautifulSoup, url: str) -> tuple[str, str]:
     """
-    Limpia el HTML y extrae el título + lista de párrafos del contenido central.
+    Limpia el HTML y lo convierte a markdown preservando la jerarquía.
 
     Estrategia:
       1. Elimina etiquetas de ruido (nav, footer, scripts…).
       2. Busca el contenedor principal: <main>, <article>, div#content, etc.
-      3. Extrae texto de <p>, <li>, <h1-h4>, <td> del contenedor.
+      3. Recorre <h1-h4>, <p>, <li>, <td> en orden y los traduce a markdown
+         (encabezados con #, listas con -), para que el splitter jerárquico de
+         ingest_markdown.py pueda reconstruir las secciones.
+
+    Devuelve (título, texto_markdown). El markdown empieza siempre por un H1.
     """
     # Eliminar ruido
     for tag in soup.find_all(NOISE_TAGS):
@@ -200,15 +232,39 @@ def extract_content(soup: BeautifulSoup, url: str) -> tuple[str, list[str]]:
         or soup.body
     )
     if main is None:
-        return title, []
+        return title, ""
 
-    paragraphs: list[str] = []
+    heading_prefix = {"h1": "# ", "h2": "## ", "h3": "### ", "h4": "#### "}
+    lines: list[str] = []
     for tag in main.find_all(["p", "li", "h1", "h2", "h3", "h4", "td", "th"]):
         text = tag.get_text(separator=" ", strip=True)
-        if text:
-            paragraphs.append(text)
+        if not text:
+            continue
+        name = tag.name
+        if name in heading_prefix:
+            lines.append(f"{heading_prefix[name]}{text}")
+        elif name == "li":
+            lines.append(f"- {text}")
+        else:
+            lines.append(text)
 
-    return title, paragraphs
+    md_text = "\n\n".join(lines).strip()
+    if not md_text:
+        return title, ""
+
+    # Prefijar H1 para compatibilidad con _extract_title en ingest_markdown
+    if not md_text.lstrip().startswith("# "):
+        md_text = f"# {title}\n\n{md_text}"
+
+    return title, md_text
+
+
+def url_to_md_name(url: str) -> str:
+    """Convierte una URL en un nombre de fichero markdown seguro y estable."""
+    path = urlparse(url).path.strip("/")
+    slug = path.replace("/", "-") if path else urlparse(url).netloc
+    slug = re.sub(r"[^a-zA-Z0-9._-]", "-", slug).strip("-") or "index"
+    return f"web__{slug}.md"
 
 
 # ── PDF metadata store ────────────────────────────────────────────────────────
@@ -229,6 +285,25 @@ def save_pdf_sources(data: dict[str, dict]) -> None:
     )
 
 
+# ── Web markdown source store ─────────────────────────────────────────────────
+
+def load_web_sources() -> dict[str, str]:
+    """Mapa {nombre_md: source_url} de las páginas web ya guardadas."""
+    if WEB_SOURCES.exists():
+        try:
+            return json.loads(WEB_SOURCES.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_web_sources(data: dict[str, str]) -> None:
+    WEB_SOURCES.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 # ── Crawler principal ─────────────────────────────────────────────────────────
 
 class ETSICrawler:
@@ -236,29 +311,22 @@ class ETSICrawler:
     def __init__(
         self,
         state:     CrawlState,
-        ingest:    bool = True,
+        save_web:  bool = True,
         dry_run:   bool = False,
     ) -> None:
-        self._state   = state
-        self._ingest  = ingest
-        self._dry_run = dry_run
-
-        if ingest and not dry_run:
-            from src.ingestion.processor import DocumentProcessor
-            from src.database.vector_store import VectorStoreManager
-            self._processor    = DocumentProcessor()
-            self._vector_store = VectorStoreManager()
-        else:
-            self._processor    = None
-            self._vector_store = None
+        self._state    = state
+        self._save_web = save_web   # guardar páginas web como markdown
+        self._dry_run  = dry_run
 
         PDF_DIR.mkdir(parents=True, exist_ok=True)
+        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
         self._pdf_sources = load_pdf_sources()
+        self._web_sources = load_web_sources()
 
         self._session = requests.Session()
         self._session.headers.update(HEADERS)
 
-        self._html_chunks  = 0
+        self._web_pages    = 0
         self._pdfs_new     = 0
         self._pdfs_skip    = 0
         self._pages_ok     = 0
@@ -326,8 +394,8 @@ class ETSICrawler:
 
     def _handle_html(self, url: str, response: requests.Response) -> set[str]:
         """
-        Extrae contenido de la página, lo ingesta en ChromaDB (si procede)
-        y devuelve el conjunto de enlaces descubiertos.
+        Extrae el contenido de la página, lo guarda como markdown en
+        data/processed/ (si procede) y devuelve los enlaces descubiertos.
         """
         try:
             soup = BeautifulSoup(response.text, "html.parser")
@@ -335,25 +403,31 @@ class ETSICrawler:
             print(f"  [ERROR parse] {url}: {exc}")
             return set()
 
-        title, paragraphs = extract_content(soup, url)
+        title, md_text = extract_markdown(soup, url)
         links = extract_links(soup, url)
 
         if self._dry_run:
-            print(f"  [HTML-dry] {url} | {len(paragraphs)} párrafos | {len(links)} enlaces")
+            print(f"  [HTML-dry] {url} | {len(md_text)} chars | {len(links)} enlaces")
             return links
 
-        if paragraphs and self._ingest and self._processor and self._vector_store:
-            chunks = self._processor.process(title=title, url=url, paragraphs=paragraphs)
-            if chunks:
-                self._vector_store.add_documents(chunks)
-                self._html_chunks += len(chunks)
-                print(f"  [HTML] {url} → {len(chunks)} chunks")
-            else:
-                print(f"  [HTML] {url} → sin contenido útil")
+        if md_text and self._save_web:
+            self._write_web_markdown(url, md_text)
         else:
-            print(f"  [HTML] {url} → {len(paragraphs)} párrafos (sin ingesta)")
+            print(f"  [HTML] {url} → sin contenido útil (no guardado)")
 
         return links
+
+    def _write_web_markdown(self, url: str, md_text: str) -> None:
+        """Guarda la página como markdown y registra su URL de origen."""
+        name = url_to_md_name(url)
+        dest = PROCESSED_DIR / name
+        dest.write_text(md_text, encoding="utf-8")
+
+        self._web_sources[name] = url
+        save_web_sources(self._web_sources)
+
+        self._web_pages += 1
+        print(f"  [WEB] {url} → {name} ({len(md_text)} chars)")
 
     # ── Bucle principal ───────────────────────────────────────────────────────
 
@@ -369,7 +443,7 @@ class ETSICrawler:
         print(f"\n{'='*60}")
         print(f"  Iniciando crawl — {len(queue)} URL(s) de inicio")
         print(f"  Delay: {DELAY_SECONDS}s | Límite: {MAX_PAGES} páginas")
-        print(f"  Modo: {'dry-run' if self._dry_run else ('con ingesta' if self._ingest else 'sin ingesta')}")
+        print(f"  Modo: {'dry-run' if self._dry_run else ('guardando webs' if self._save_web else 'solo PDFs')}")
         print(f"{'='*60}\n")
 
         while queue and pages_processed < MAX_PAGES:
@@ -433,16 +507,17 @@ class ETSICrawler:
 
         print(f"\n{'='*60}")
         print("  CRAWL COMPLETADO")
-        print(f"  Páginas OK:       {self._pages_ok}")
-        print(f"  Páginas con error:{self._pages_error}")
-        print(f"  PDFs nuevos:      {self._pdfs_new}")
-        print(f"  PDFs duplicados:  {self._pdfs_skip}")
-        print(f"  Chunks HTML:      {self._html_chunks}")
+        print(f"  Páginas OK:        {self._pages_ok}")
+        print(f"  Páginas con error: {self._pages_error}")
+        print(f"  PDFs nuevos:       {self._pdfs_new}")
+        print(f"  PDFs duplicados:   {self._pdfs_skip}")
+        print(f"  Webs guardadas:    {self._web_pages}")
         print(f"{'='*60}\n")
 
-        if self._pdfs_new > 0:
-            print(f"  → {self._pdfs_new} PDF(s) descargados en {PDF_DIR}/")
-            print("  → Ejecuta 'python main_ingestion.py' para indexarlos en ChromaDB.")
+        if self._pdfs_new > 0 or self._web_pages > 0:
+            print(f"  → PDFs en {PDF_DIR}/ ; webs (markdown) en {PROCESSED_DIR}/")
+            print("  → Siguiente paso: 'pdf_to_markdown' y luego 'ingest_markdown'")
+            print("    para indexar todo en la colección 'etsi_hibrida'.")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -459,12 +534,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Descubre URLs y PDFs pero no descarga ni modifica ChromaDB.",
+        help="Descubre URLs y PDFs pero no descarga ni escribe nada en disco.",
     )
     parser.add_argument(
-        "--no-ingest",
+        "--no-save",
         action="store_true",
-        help="Descarga PDFs y procesa HTML pero no añade nada a ChromaDB.",
+        help="Descarga PDFs pero no guarda el markdown de las páginas web.",
     )
     parser.add_argument(
         "--delay",
@@ -494,7 +569,7 @@ if __name__ == "__main__":
 
     crawler = ETSICrawler(
         state=state,
-        ingest=not args.no_ingest,
+        save_web=not args.no_save,
         dry_run=args.dry_run,
     )
     crawler.run()

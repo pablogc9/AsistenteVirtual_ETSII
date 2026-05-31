@@ -65,22 +65,7 @@ _MIN_RERANK_SCORE = -2.0
 
 
 class AdvancedRetriever:
-    """
-    Pipeline de recuperación avanzado con cuatro mejoras sobre la búsqueda
-    vectorial simple:
-
-    1. Reescritura conversacional  – desambigua la query usando el historial
-                                     antes de buscar (ej. 'el otro grado' →
-                                     'el Grado en Ingeniería Informática').
-    2. Multi-Query                 – genera 3 variaciones semánticas con el LLM
-                                     para ampliar la cobertura de recuperación.
-    3. HyDE                        – genera un documento hipotético que sirve
-                                     como query adicional en espacio de embeddings
-                                     de respuestas (no de preguntas).
-    4. Re-ranking con CrossEncoder – puntúa cada candidato con un modelo
-                                     multilingüe y filtra los irrelevantes
-                                     (score < _MIN_RERANK_SCORE).
-    """
+    """Recuperación vectorial con reescritura conversacional, multi-query, HyDE y re-ranking."""
 
     def __init__(
         self,
@@ -147,12 +132,7 @@ class AdvancedRetriever:
     # ── Paso 1b: documento hipotético (HyDE) ─────────────────────────────────
 
     def _generate_hyde(self, question: str) -> str:
-        """
-        Genera un fragmento de documento hipotético que respondería la pregunta.
-
-        Por qué funciona: buscar con un texto que parece una *respuesta* produce
-        embeddings más próximos a los documentos reales que buscar con la pregunta.
-        """
+        """Generar documento hipotético de respuesta para ampliar la búsqueda vectorial."""
         try:
             response = self._hyde_chain.invoke({"question": question})
             return response.content.strip()
@@ -217,7 +197,6 @@ class AdvancedRetriever:
             return filtered
 
         except Exception:
-            # Fallback: ordena por distancia vectorial ascendente sin filtro de score
             for c in candidates:
                 c["rerank_score"] = 0.0
             return sorted(candidates, key=lambda x: x.get("distance", 1.0))[: self._top_k]
@@ -229,18 +208,7 @@ class AdvancedRetriever:
         question:  str,
         historial: list[Mapping[str, str]] | None = None,
     ) -> tuple[list[dict[str, Any]], float]:
-        """
-        Orquesta el pipeline completo de recuperación.
-
-        Parámetros:
-            question  – Pregunta original del usuario.
-            historial – Historial de la conversación (para reescritura contextual).
-
-        Devuelve:
-            fragments  – Top-K fragmentos relevantes listos para el LLM.
-            best_score – Score CrossEncoder del mejor fragmento (para auditoría).
-        """
-        # 0. Reescritura conversacional (solo si hay historial)
+        """Orquestar reescritura, multi-query, HyDE, búsqueda y re-ranking."""
         standalone = self._rewrite_with_history(question, historial or [])
 
         # 1. Multi-Query + HyDE → pool de queries diversas

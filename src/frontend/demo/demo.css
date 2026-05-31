@@ -1,0 +1,83 @@
+/* ============================================================================
+ *  Página de demostración — simula el portal de la ETSI Informática (UMA)
+ *  Sirve para enseñar el widget integrado en un entorno controlado.
+ * ========================================================================== */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: 'IBM Plex Sans', sans-serif;
+    color: #1a1a2e;
+    background: #ffffff;
+    line-height: 1.6;
+}
+
+/* ── Barra superior institucional ── */
+.topbar {
+    background: #002147;
+    color: rgba(255,255,255,0.8);
+    font-size: 0.78rem;
+    padding: 6px 0;
+}
+.topbar .wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; display: flex; justify-content: flex-end; gap: 20px; }
+.topbar a { color: rgba(255,255,255,0.75); text-decoration: none; }
+
+/* ── Cabecera ── */
+header.main {
+    background: #ffffff;
+    border-bottom: 3px solid #0057a8;
+    padding: 18px 0;
+}
+header.main .wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; }
+.brand { display: flex; align-items: center; gap: 14px; }
+.brand-logo {
+    width: 52px; height: 52px; background: #002147; color: #00a8e8;
+    border-radius: 3px; display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.9rem; letter-spacing: -0.5px;
+}
+.brand-text h1 { font-size: 1.2rem; color: #002147; font-weight: 700; }
+.brand-text p { font-size: 0.82rem; color: #6b7a99; }
+nav ul { list-style: none; display: flex; gap: 26px; }
+nav a { text-decoration: none; color: #002147; font-weight: 500; font-size: 0.92rem; }
+nav a:hover { color: #0057a8; }
+
+/* ── Hero ── */
+.hero {
+    background: linear-gradient(135deg, #002147 0%, #0057a8 100%);
+    color: white; padding: 80px 0;
+}
+.hero .wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+.hero h2 { font-size: 2.4rem; font-weight: 700; margin-bottom: 16px; max-width: 700px; }
+.hero p { font-size: 1.1rem; color: rgba(255,255,255,0.85); max-width: 600px; font-weight: 300; }
+.hero .cta {
+    display: inline-block; margin-top: 28px; background: #00a8e8; color: #002147;
+    padding: 12px 28px; border-radius: 2px; text-decoration: none; font-weight: 600;
+}
+
+/* ── Contenido ── */
+main { max-width: 1100px; margin: 0 auto; padding: 64px 24px; }
+.section-title { font-size: 1.6rem; color: #002147; margin-bottom: 8px; font-weight: 700; }
+.section-sub { color: #6b7a99; margin-bottom: 36px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px; }
+.card {
+    border: 1px solid #dde3ef; border-radius: 3px; padding: 28px;
+    transition: border-color 0.2s;
+}
+.card:hover { border-color: #0057a8; }
+.card .tag { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #0057a8; font-weight: 600; }
+.card h3 { font-size: 1.15rem; color: #002147; margin: 8px 0 10px; }
+.card p { font-size: 0.92rem; color: #4a5568; }
+
+/* ── Pie ── */
+footer {
+    background: #002147; color: rgba(255,255,255,0.7); padding: 40px 0; margin-top: 40px;
+    font-size: 0.85rem;
+}
+footer .wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+.demo-note {
+    background: #fff8e1; border: 1px solid #ffe082; border-radius: 3px;
+    padding: 14px 18px; margin-bottom: 40px; font-size: 0.88rem; color: #7a5d00;
+}
+.demo-note code {
+    background: #002147; color: #fff; padding: 2px 7px; border-radius: 2px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem;
+}

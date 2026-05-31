@@ -46,12 +46,7 @@ class SystemConfig(Base):
 #--------------------------
 
 class DBManager:
-    """
-    Gestiona la base de datos SQLite de logs de interacciones.
-
-    La base de datos se crea automáticamente en data/chatlogs.db
-    la primera vez que se instancia la clase.
-    """
+    """Gestión de logs de interacción y configuración dinámica en SQLite."""
 
     def __init__(self, db_path: str | None = None) -> None:
         project_root = Path(__file__).resolve().parents[2]
@@ -70,7 +65,7 @@ class DBManager:
                 ))
                 conn.commit()
         except Exception:
-            pass  # La columna ya existe
+            pass
 
     def log_interaction(
         self,
@@ -82,10 +77,7 @@ class DBManager:
         tokens_used:  int | None   = None,
         rerank_score: float | None = None,
     ) -> int:
-        """
-        Registra una interacción completa y devuelve el ID del registro.
-        (necesario para poder actualizar el feedback después)
-        """
+        """Registrar interacción y devolver el ID del log."""
         with Session(self._engine) as session:
             log = ChatLog(
                 question=question,
@@ -102,10 +94,7 @@ class DBManager:
             return log.id
 
     def update_feedback(self, log_id: int, score: int) -> bool:
-        """
-        Actualiza el feedback (1 = 👍, 0 = 👎) de un registro existente.
-        Devuelve False si el log_id no existe.
-        """
+        """Actualizar feedback (0/1) de un registro existente."""
         if score not in (0, 1):
             raise ValueError("score debe ser 0 (negativo) o 1 (positivo).")
 
@@ -118,14 +107,7 @@ class DBManager:
             return True
 
     def get_admin_stats(self) -> dict[str, Any]:
-        """
-        Devuelve métricas agregadas para el panel de control:
-        - total de interacciones
-        - total de tokens consumidos
-        - distribución de intenciones (para gráfica de tarta)
-        - media de feedback (para gráfica de satisfacción)
-        - porcentaje de interacciones seguras
-        """
+        """Devolver métricas agregadas para el panel de administración."""
         with Session(self._engine) as session:
             total = session.scalar(func.count(ChatLog.id)) or 0
             total_tokens = session.scalar(func.sum(ChatLog.tokens_used)) or 0
@@ -155,18 +137,13 @@ class DBManager:
         }
 
     def get_config(self, key: str, default: str = "") -> str:
-        """
-        Recupera el valor asociado a `key` en system_config.
-        Si la clave no existe, devuelve `default` (los valores hardcoded del código).
-        """
+        """Recuperar valor de configuración por clave."""
         with Session(self._engine) as session:
             row = session.get(SystemConfig, key)
             return row.value if row is not None else default
 
     def set_config(self, key: str, value: str) -> None:
-        """
-        Inserta o actualiza (upsert) una clave en system_config.
-        """
+        """Insertar o actualizar entrada de configuración."""
         with Session(self._engine) as session:
             row = session.get(SystemConfig, key)
             if row is None:
@@ -189,13 +166,7 @@ class DBManager:
         feedback:  str | None = None,   # "1" | "0" | "none" | None
         is_safe:   bool | None = None,
     ) -> dict[str, Any]:
-        """
-        Devuelve registros paginados con filtros opcionales.
-        - intent:   filtra por tipo de intención ("academica", "saludo", "malicioso")
-        - feedback: "1" = positivo, "0" = negativo, "none" = sin valorar, None = todos
-        - is_safe:  True | False | None (todos)
-        Devuelve un dict con items, total, page, page_size y total_pages.
-        """
+        """Devolver logs paginados con filtros opcionales."""
         # ── Construcción dinámica de filtros ──────────────────────────────────
         filters = []
         if intent:

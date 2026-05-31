@@ -9,36 +9,41 @@ from langchain_groq import ChatGroq
 
 SYSTEM_PROMPT = (
     "Eres el Asistente Virtual Oficial de la ETSI Informática de la Universidad de Málaga (UMA). "
-    "Tu misión es responder preguntas basándote en el contexto proporcionado junto con los DATOS MAESTROS que se indican a continuación.\n\n"
+    "Tu misión es responder preguntas basándote EXCLUSIVAMENTE en el contexto proporcionado.\n\n"
 
-    "DATOS MAESTROS — son hechos oficiales verificados que debes afirmar con total seguridad y sin ningún disclaimer:\n"
+    "FORMATO DEL CONTEXTO:\n"
+    "Los fragmentos de contexto provienen de documentos PDF convertidos a Markdown. Esto implica:\n"
+    "- Las TABLAS están en formato Markdown (| col | col |). Léelas fila a fila para extraer datos precisos.\n"
+    "- Los TÍTULOS de sección (# ## ###) indican la jerarquía del documento. El campo 'Sección' de cada "
+    "fragmento muestra la ruta completa (ej: 'Capítulo I > Artículo 3'). Úsala para situar la información.\n"
+    "- Si el mismo dato aparece en una tabla y en el texto, la tabla tiene prioridad.\n\n"
+
+    "DATOS MAESTROS — hechos oficiales verificados, afírmalos sin ningún disclaimer:\n"
     "- El Grado en Ingeniería del Software tiene exactamente 240 créditos ECTS en total.\n"
     "- El Grado en Ingeniería Informática tiene exactamente 240 créditos ECTS en total.\n"
     "- Ambos grados tienen una duración de 4 años (8 semestres).\n"
     "- Se imparten en la Escuela Técnica Superior de Ingeniería Informática de la UMA.\n\n"
 
     "REGLAS CRÍTICAS DE COMPORTAMIENTO:\n"
-    "1. Los DATOS MAESTROS anteriores son HECHOS ABSOLUTOS. Cuando te pregunten por el total de créditos de un grado, "
-    "responde directamente con el número exacto SIN añadir frases como 'no se especifica explícitamente' o 'se puede inferir'. "
-    "Ejemplo correcto: 'El Grado en Ingeniería del Software tiene **240 créditos ECTS**.' "
-    "Ejemplo INCORRECTO: 'Aunque no se especifica explícitamente...'\n"
-    "2. Si la respuesta no está en el contexto ni en los DATOS MAESTROS, di: 'Lo siento, no tengo información oficial sobre eso en mis registros.'\n"
-    "3. PROHIBIDO dar consejos personales, opiniones o sugerencias externas.\n"
-    "4. No inventes datos que no estén en el contexto o los DATOS MAESTROS.\n"
-    "5. Mantén un tono profesional, institucional y conciso.\n"
-    "6. Si el usuario te pregunta quién eres, responde que eres el asistente oficial de la ETSI Informática.\n"
-    "7. Sé preciso con las cifras: distingue entre créditos de módulos individuales y el total del grado.\n"
-    "8. Usa Markdown para estructurar tus respuestas: negritas para datos clave, listas para enumeraciones."
+    "1. Los DATOS MAESTROS son HECHOS ABSOLUTOS. Responde directamente con el número exacto SIN añadir "
+    "frases como 'no se especifica explícitamente' o 'se puede inferir'.\n"
+    "2. NUNCA cites el nombre de documentos ni secciones en tu respuesta (nada de 'según el documento X' "
+    "ni 'en la sección Y'). Las fuentes se muestran aparte; tu respuesta debe ser directa y natural.\n"
+    "3. Si la respuesta está en una tabla del contexto, extrae los datos concretos de esa tabla.\n"
+    "4. Si la respuesta no está en el contexto ni en los DATOS MAESTROS, di: "
+    "'Lo siento, no tengo información oficial sobre eso en mis registros.'\n"
+    "5. PROHIBIDO dar consejos personales, opiniones o sugerencias externas.\n"
+    "6. No inventes datos que no estén en el contexto o los DATOS MAESTROS.\n"
+    "7. Mantén un tono profesional, institucional y conciso.\n"
+    "8. Usa Markdown para estructurar tus respuestas: negritas para datos clave, listas para enumeraciones.\n"
+    "9. Sé preciso con las cifras: distingue entre créditos de módulos individuales y el total del grado.\n"
+    "10. NUNCA menciones de dónde proviene la información interna (grafo, fragmentos, ChromaDB, etc.). "
+    "Responde directamente como si el conocimiento fuera tuyo. En lugar de 'Según el grafo...' di simplemente los datos."
 )
 
 
 class ChatEngine:
-    """
-    Motor de chat basado en LangChain + Llama-3 (Groq).
-
-    - Recibe una pregunta del usuario y fragmentos recuperados de ChromaDB.
-    - Construye un mensaje con el contexto y genera una respuesta final.
-    """
+    """Generar respuestas a partir de fragmentos vectoriales y contexto del grafo."""
 
     def __init__(
         self,
@@ -54,27 +59,39 @@ class ChatEngine:
     def _format_context(
         fragments: Iterable[Mapping[str, Any]],
     ) -> str:
-        """
-        Recibe los fragmentos recuperados de ChromaDB y los empaqueta en un texto
-        que el modelo pueda usar como contexto.
-
-        Se asume que cada fragmento tiene al menos:
-        - `text`: contenido del chunk.
-        - `metadata`: diccionario con metadatos (título, URL, etc.).
-        """
+        """Formatear fragmentos de ChromaDB con metadatos de documento y sección."""
         lines: list[str] = []
 
         for i, frag in enumerate(fragments, start=1):
-            text = frag.get("text", "")
+            text     = frag.get("text", "")
             metadata = frag.get("metadata", {}) or {}
-            title = metadata.get("title") or metadata.get("Titulo") or ""
-            source = metadata.get("source") or metadata.get("url") or ""
 
+            # ── Título del documento ───────────────────────────────────────────
+            title = (
+                metadata.get("title")
+                or metadata.get("Titulo")
+                or ""
+            )
+
+            # ── Fuente (nombre de fichero o URL) ───────────────────────────────
+            source = (
+                metadata.get("source_file")
+                or metadata.get("source")
+                or metadata.get("url")
+                or ""
+            )
+
+            # ── Sección jerárquica (nuevo metadato de etsi_hibrida) ────────────
+            section = metadata.get("section", "").strip()
+
+            # ── Construcción del encabezado del fragmento ──────────────────────
             header_parts: list[str] = []
             if title:
-                header_parts.append(f"Título: {title}")
+                header_parts.append(f"Documento: {title}")
             if source:
                 header_parts.append(f"Fuente: {source}")
+            if section:
+                header_parts.append(f"Sección: {section}")
 
             header = " | ".join(header_parts) if header_parts else f"Fragmento {i}"
 
@@ -89,18 +106,13 @@ class ChatEngine:
         historial:     list[Mapping[str, Any]],
         system_prompt: str | None = None,
         model_name:    str | None = None,
+        graph_context: str | None = None,
     ) -> tuple[str, int]:
-        """
-        Genera una respuesta final a partir de la pregunta del usuario y los
-        fragmentos recuperados del vector store.
-
-        - `system_prompt`: si se proporciona, sobreescribe SYSTEM_PROMPT (configurable desde el admin).
-        - `model_name`: si se proporciona y es distinto al por defecto, crea un ChatGroq al vuelo.
-        """
+        """Generar respuesta final combinando grafo, fragmentos e historial."""
         if not question:
             raise ValueError("La pregunta no puede estar vacía.")
 
-        if not fragments:
+        if not fragments and not graph_context:
             return (
                 "No dispongo de suficiente contexto para responder a esa pregunta. "
                 "Prueba a reformularla o consulta con la secretaría de la ETSI Informática.",
@@ -109,13 +121,25 @@ class ChatEngine:
 
         active_prompt = system_prompt or SYSTEM_PROMPT
 
-        # Reutilizar el LLM base salvo que el admin haya cambiado el modelo
         if model_name and model_name != self._model_name:
             active_llm = ChatGroq(model=model_name, temperature=self._temperature)
         else:
             active_llm = self._llm
 
-        context = self._format_context(fragments)
+        context_parts: list[str] = []
+        if graph_context:
+            context_parts.append(graph_context)
+        if fragments:
+            chroma_block = self._format_context(fragments)
+            header = (
+                "── FRAGMENTOS DE DOCUMENTOS (contexto de apoyo) ──────────────\n"
+                "Usa estos fragmentos para complementar la respuesta, pero en caso\n"
+                "de contradicción, los DATOS DEL GRAFO tienen prioridad absoluta.\n"
+                "───────────────────────────────────────────────────────────────"
+            )
+            context_parts.append(f"{header}\n\n{chroma_block}")
+
+        context = "\n\n".join(context_parts)
 
         messages = [("system", active_prompt)]
         for msg in historial:

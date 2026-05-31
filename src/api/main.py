@@ -4,46 +4,57 @@ load_dotenv()
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
-from src.core.security import create_access_token, get_current_admin
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from src.core.security import create_access_token, get_current_admin
 
 from src.database.vector_store import VectorStoreManager
 from src.database.db_manager import DBManager
 from src.core.llm_engine import ChatEngine
 from src.core.router import InputRouter
 from src.core.retriever import AdvancedRetriever
+from src.core.graph_retriever import GraphRetriever
 
 
 # --------------------------
 # App y middleware
 # --------------------------
 
-app = FastAPI()
+limiter = Limiter(key_func=get_remote_address)
 
-# Middleware CORS: debe registrarse antes de definir cualquier ruta
+app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+_ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # Acepta peticiones desde cualquier dominio
-    allow_methods=["*"],      # Acepta GET, POST, PUT, DELETE, etc.
-    allow_headers=["*"],      # Acepta cualquier cabecera HTTP
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PUT"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-app.mount("/pdfs", StaticFiles(directory="data/raw"), name="pdfs")
+app.mount("/pdfs",   StaticFiles(directory="data/raw"),      name="pdfs")
+app.mount("/static", StaticFiles(directory="src/frontend"),  name="static")
 
 
 # --------------------------
 # Instancias globales
 # --------------------------
 
-vector_store       = VectorStoreManager()
+vector_store       = VectorStoreManager(collection_name="etsi_hibrida")
 chat_engine        = ChatEngine()
 router             = InputRouter()
 db_manager         = DBManager()
 advanced_retriever = AdvancedRetriever(vector_store)
+graph_retriever    = GraphRetriever()
 
 
 # --------------------------
@@ -64,12 +75,29 @@ class HistorialMessage(BaseModel):
     content: str
 
 class AskRequest(BaseModel):
-    question: str
+    question:  str
     historial: list[HistorialMessage] = []
+
+    @field_validator("question")
+    @classmethod
+    def question_not_empty_or_too_long(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("La pregunta no puede estar vacía.")
+        if len(v) > 1000:
+            raise ValueError("La pregunta no puede superar los 1000 caracteres.")
+        return v
 
 class FeedbackRequest(BaseModel):
     log_id: int
     score:  int   # 1 = 👍, 0 = 👎
+
+    @field_validator("score")
+    @classmethod
+    def score_valid(cls, v: int) -> int:
+        if v not in (0, 1):
+            raise ValueError("El score debe ser 0 o 1.")
+        return v
 
 class ConfigUpdateRequest(BaseModel):
     system_prompt: str | None = None
@@ -81,11 +109,9 @@ class ConfigUpdateRequest(BaseModel):
 # --------------------------
 
 @app.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    """
-    Recibe username y password y verifica contra las variables de entorno ADMIN_USERNAME y ADMIN_PASSWORD
-    Si son correctas, devuelve un JWT válido durante 8 horas
-    """
+@limiter.limit("10/minute")
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    """Autenticar administrador y devolver JWT."""
     admin_user = os.getenv("ADMIN_USERNAME", "")
     admin_pass = os.getenv("ADMIN_PASSWORD", "")
 
@@ -107,14 +133,14 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 
 @app.post("/ask")
-async def ask(request: AskRequest):
+@limiter.limit("30/minute")
+async def ask(request: Request, body: AskRequest):
 
-    # --- Capa de enrutamiento y seguridad ---
-    route = router.process_input(request.question)
+    route = router.process_input(body.question)
 
-    if not route.is_safe or not route.proceed_to_rag:  # Bloqueo por seguridad o charla casual: Respuesta directa
+    if not route.is_safe or not route.proceed_to_rag:
         log_id = db_manager.log_interaction(
-            question=request.question,
+            question=body.question,
             intent=route.intent.value,
             answer=route.direct_response,
             model_name="router",
@@ -124,13 +150,13 @@ async def ask(request: AskRequest):
         )
         return {"answer": route.direct_response, "sources": [], "log_id": log_id}
 
-    # --- Capa de RAG con Multi-Query + Re-ranking ---
-    historial_dicts = [m.model_dump() for m in request.historial]
-    fragments, best_rerank_score = advanced_retriever.retrieve(request.question, historial_dicts)
+    historial_dicts = [m.model_dump() for m in body.historial]
+    fragments, best_rerank_score = advanced_retriever.retrieve(body.question, historial_dicts)
+    graph_context = graph_retriever.search(body.question, historial_dicts)
 
-    if not fragments:
+    if not fragments and not graph_context:
         log_id = db_manager.log_interaction(
-            question=request.question,
+            question=body.question,
             intent=route.intent.value,
             answer=NO_CONTEXT_MSG,
             model_name="none",
@@ -140,33 +166,43 @@ async def ask(request: AskRequest):
         )
         return {"answer": NO_CONTEXT_MSG, "sources": [], "log_id": log_id}
 
-    # Construcción de fuentes únicas con título y URL/ruta
-    seen = set()
+    seen: set[str] = set()
     sources = []
+    if graph_context:
+        sources.append({"title": "Grafo de Conocimiento ETSI", "url": None})
     for frag in fragments:
-        meta = frag.get("metadata", {})
-        raw_source = meta.get("source") or meta.get("source_path", "")
-        if not raw_source or raw_source in seen:
+        meta = frag.get("metadata", {}) or {}
+
+        source_url  = meta.get("source_url", "")
+        source_file = meta.get("source_file", "")
+
+        if not source_url:
+            source_url = meta.get("url") or meta.get("source") or ""
+        if not source_file:
+            source_file = meta.get("source_path") or meta.get("source") or ""
+
+        title = meta.get("title") or meta.get("Titulo") or ""
+
+        dedup_key = source_url or source_file
+        if not dedup_key or dedup_key in seen:
             continue
-        seen.add(raw_source)
-        title = meta.get("title", "")
-        # Si es un PDF local, construimos la URL pública
-        url = f"{BASE_URL}/pdfs/{Path(raw_source).name}" if raw_source.endswith(".pdf") else raw_source
+        seen.add(dedup_key)
+
+        url = source_url if source_url else None
         sources.append({"title": title, "url": url})
 
-    # -- Capa de LLM ---
-    # Leer config dinámica; si la clave no existe en DB usa los valores por defecto
     active_prompt     = db_manager.get_config("system_prompt") or None
     active_model_name = db_manager.get_config("model_name")    or None
 
     answer, tokens_used = chat_engine.generate_answer(
-        request.question, fragments, request.historial,
+        body.question, fragments, body.historial,
         system_prompt=active_prompt,
         model_name=active_model_name,
+        graph_context=graph_context,
     )
 
     log_id = db_manager.log_interaction(
-        question=request.question,
+        question=body.question,
         intent=route.intent.value,
         answer=answer,
         model_name=MODEL_NAME,
@@ -179,8 +215,9 @@ async def ask(request: AskRequest):
 
 
 @app.post("/feedback")
-async def feedback(request: FeedbackRequest):
-    ok = db_manager.update_feedback(request.log_id, request.score)
+@limiter.limit("60/minute")
+async def feedback(request: Request, body: FeedbackRequest):
+    ok = db_manager.update_feedback(body.log_id, body.score)
     if not ok:
         return {"ok": False, "error": "log_id no encontrado"}
     return {"ok": True}
@@ -193,10 +230,7 @@ async def admin_stats(current_admin: str = Depends(get_current_admin)):
 
 @app.get("/admin/config")
 async def get_config(current_admin: str = Depends(get_current_admin)):
-    """
-    Devuelve la configuración activa del sistema.
-    Si una clave no se ha editado todavía, indica que se está usando el valor por defecto.
-    """
+    """Devolver configuración activa del sistema."""
     from src.core.llm_engine import SYSTEM_PROMPT
     stored = db_manager.get_all_config()
     return {
@@ -210,10 +244,7 @@ async def update_config(
     request:       ConfigUpdateRequest,
     current_admin: str = Depends(get_current_admin),
 ):
-    """
-    Actualiza la configuración del sistema en caliente (sin reiniciar el servidor).
-    Solo se guardan los campos que vengan con valor en el body.
-    """
+    """Actualizar prompt o modelo del LLM en caliente."""
     if request.system_prompt is not None:
         db_manager.set_config("system_prompt", request.system_prompt)
     if request.model_name is not None:
